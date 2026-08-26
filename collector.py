@@ -22,6 +22,7 @@ import time
 import xml.etree.ElementTree as ET
 
 import requests
+from bs4 import BeautifulSoup
 
 import storage
 
@@ -141,3 +142,67 @@ def select_sources(cfg: dict, name: str | None, method: str) -> list[dict]:
 def polite_sleep(cfg: dict) -> None:
     """요청 사이에 쉬어 간다. 상대 서버에 대한 예의이자 차단 방지."""
     time.sleep(cfg.get("request", {}).get("delay_sec", 1.0))
+
+
+# ====================================================================
+#  방법 2 — 크롤링 (요건 2)
+#  RSS는 제목과 짧은 요약만 준다. AI에게 요약을 시키려면 본문이 필요하다.
+#  그래서 RSS로 얻은 주소를 하나씩 방문해 본문을 긁어온다.
+#
+#  크롤링 예절 (제약사항 7)
+#    - robots.txt 를 미리 확인했다 (경향신문은 User-agent:* 에 대해 허용)
+#    - 요청 사이에 delay_sec 만큼 쉰다
+#    - 신원을 밝히는 User-Agent 를 보낸다
+#    - 한 번에 --limit 만큼만 가져온다
+# ====================================================================
+
+# 본문이 아닌데 <p> 를 많이 가진 영역들. 미리 걷어낸다.
+NOISE_TAGS = ["script", "style", "nav", "header", "footer", "aside", "form", "iframe"]
+
+
+def extract_article(html: str, cfg: dict) -> tuple[str, str]:
+    """HTML에서 기사 본문을 뽑는다. (본문, 어떤 방법으로 찾았는지)
+
+    2단계로 시도한다.
+      1) config.json 에 적어둔 선택자를 순서대로 시도
+      2) 다 실패하면 — <p> 글자수가 가장 많은 영역을 본문으로 본다
+
+    2번이 있는 이유: 사이트 디자인이 바뀌면 선택자는 바로 깨진다.
+    그때 프로그램이 통째로 멈추는 대신, 덜 정확해도 계속 돌게 한다.
+    """
+    conf = cfg.get("crawl", {})
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(NOISE_TAGS):
+        tag.decompose()
+
+    # 1단계 — 지정한 선택자
+    for sel in conf.get("selectors", []):
+        node = soup.select_one(sel)
+        if node:
+            text = clean_text(node.get_text(" ", strip=True))
+            if len(text) >= conf.get("min_chars", 100):
+                return text[: conf.get("max_chars", 5000)], f"선택자 {sel}"
+
+    # 2단계 — <p> 가 가장 많이 모인 영역
+    best, best_len = None, 0
+    for node in soup.find_all(["div", "article", "section"]):
+        length = sum(len(p.get_text(strip=True)) for p in node.find_all("p", recursive=False))
+        if length > best_len:
+            best, best_len = node, length
+    if best and best_len >= conf.get("min_chars", 100):
+        text = clean_text(best.get_text(" ", strip=True))
+        return text[: conf.get("max_chars", 5000)], "본문 추정(<p> 최다 영역)"
+
+    return "", "실패"
+
+
+def clean_text(text: str) -> str:
+    """줄바꿈·중복 공백을 정리한다."""
+    return " ".join(text.split())
+
+
+def crawl_article(url: str, cfg: dict, log) -> tuple[str, str]:
+    """기사 한 편의 본문을 가져온다."""
+    res = http_get(url, cfg, log)
+    res.encoding = res.apparent_encoding or "utf-8"
+    return extract_article(res.text, cfg)

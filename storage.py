@@ -118,3 +118,45 @@ def select_raw(conn: sqlite3.Connection, limit: int | None = None) -> list[sqlit
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()
+
+
+# --- 크롤링으로 본문을 채우기 위해 나중에 추가된 컬럼 ------------------
+# 이미 만들어진 테이블에 컬럼을 덧붙이는 것을 '마이그레이션'이라고 한다.
+# 기존 데이터를 지우지 않고 구조만 넓힌다.
+CONTENT_COLUMNS = {
+    "content_source": "TEXT",        # 본문을 무엇으로 얻었는가 (crawl)
+    "content_collected_at": "TEXT",  # 본문을 언제 얻었는가
+}
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """없는 컬럼만 골라서 추가한다. 이미 있으면 건너뛴다."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(raw_news)")}
+    for name, coltype in CONTENT_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE raw_news ADD COLUMN {name} {coltype}")
+    conn.commit()
+
+
+def select_uncrawled(conn: sqlite3.Connection, limit: int | None = None) -> list[sqlite3.Row]:
+    """아직 본문이 없는 기사만 고른다. 같은 기사를 두 번 긁지 않기 위해."""
+    sql = ("SELECT id, url, title FROM raw_news "
+           "WHERE content IS NULL OR TRIM(content) = '' ORDER BY id")
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql).fetchall()
+
+
+def update_content(conn: sqlite3.Connection, row_id: int, content: str) -> None:
+    """크롤링으로 얻은 본문을 해당 기사에 채운다."""
+    conn.execute(
+        "UPDATE raw_news SET content = ?, content_source = 'crawl', "
+        "content_collected_at = ? WHERE id = ?",
+        (content, now_iso(), row_id),
+    )
+
+
+def count_with_content(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM raw_news WHERE content IS NOT NULL AND TRIM(content) <> ''"
+    ).fetchone()[0]

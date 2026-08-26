@@ -91,6 +91,20 @@ def build_parser() -> argparse.ArgumentParser:
                        default="all", help="내보낼 대상 (기본: all)")
     p_exp.add_argument("--category", help="특정 카테고리만")
 
+    # --- 보너스: 조회 CLI ---
+    p_list = sub.add_parser("list", help="[보너스] 기사 목록을 조회한다")
+    p_list.add_argument("--category", help="카테고리")
+    p_list.add_argument("--date-from", help="시작일 (YYYY-MM-DD)")
+    p_list.add_argument("--date-to", help="종료일 (YYYY-MM-DD)")
+    p_list.add_argument("--keyword", help="제목·요약·본문에서 찾을 낱말")
+    p_list.add_argument("--status", choices=["all", "summarized", "unsummarized"],
+                        default="all")
+    p_list.add_argument("--page", type=int, default=1, help="페이지 번호 (기본: 1)")
+    p_list.add_argument("--size", type=int, default=10, help="한 페이지 건수 (기본: 10)")
+
+    p_show = sub.add_parser("show", help="[보너스] 기사 한 건을 자세히 본다")
+    p_show.add_argument("id", type=int, help="기사 ID")
+
     return parser
 
 
@@ -455,6 +469,92 @@ def cmd_export(args, cfg: dict, log) -> int:
     return 0
 
 
+def cmd_list(args, cfg: dict, log) -> int:
+    """[보너스] 조건에 맞는 기사 목록을 페이지 단위로 보여준다."""
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.migrate_clean(conn)
+
+    filters = dict(category=args.category, date_from=args.date_from,
+                   date_to=args.date_to, keyword=args.keyword, status=args.status)
+    total = storage.count_filtered(conn, **filters)
+    if total == 0:
+        log.warning("조건에 맞는 기사가 없습니다.")
+        conn.close()
+        return 1
+
+    pages = (total + args.size - 1) // args.size
+    if args.page > pages:
+        log.warning("%d페이지는 없습니다. (전체 %d페이지)", args.page, pages)
+        conn.close()
+        return 1
+
+    rows = storage.list_news(conn, args.page, args.size, **filters)
+
+    shown = []
+    if args.category:  shown.append(f"카테고리={args.category}")
+    if args.keyword:   shown.append(f"검색어='{args.keyword}'")
+    if args.date_from or args.date_to:
+        shown.append(f"기간={args.date_from or '처음'}~{args.date_to or '끝'}")
+    if args.status != "all": shown.append(f"상태={args.status}")
+
+    print()
+    print(f"  전체 {total}건" + (f"  |  {', '.join(shown)}" if shown else ""))
+    print(f"  {'ID':>4}  {'발행일':<12} {'카테고리':<11} 제목")
+    print("  " + "-" * 74)
+    for r in rows:
+        mark = "○" if r["has_summary"] else "·"
+        title = r["title"]
+        if len(title) > 38:
+            title = title[:37] + "…"
+        print(f"  {r['id']:>4}  {r['published_date']:<12} {r['category']:<11} {mark} {title}")
+    print("  " + "-" * 74)
+    print(f"  {args.page} / {pages} 페이지   (○ = 요약 있음)")
+    if args.page < pages:
+        print(f"  다음 페이지: python main.py list --page {args.page + 1}")
+    print()
+
+    conn.close()
+    return 0
+
+
+def cmd_show(args, cfg: dict, log) -> int:
+    """[보너스] 기사 한 건의 전체 내용을 보여준다."""
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.migrate_clean(conn)
+
+    row = storage.get_news(conn, args.id)
+    if row is None:
+        log.error("ID=%d 인 기사가 없습니다. list 로 번호를 확인하세요.", args.id)
+        conn.close()
+        return 1
+
+    print()
+    print("=" * 72)
+    print(f"  [{row['category']}]  {row['title']}")
+    print("=" * 72)
+    print(f"  발행일     : {row['published_date']}")
+    print(f"  언론사     : {row['publisher']}  ({row['source_name']} / {row['method']})")
+    print(f"  분류 근거  : {row['matched_keywords']}")
+    print(f"  본문 출처  : {row['body_source']}  ({len(row['content'] or '')}자)")
+    print(f"  링크       : {row['url']}")
+    print("-" * 72)
+    if row["summary"]:
+        print(f"  [AI 요약]  ({row['summary_model']}, {row['summarized_at']})")
+        print(f"  {row['summary']}")
+    else:
+        print("  [AI 요약]  아직 없습니다. summarize --id %d 로 만들 수 있습니다." % row["id"])
+    print("-" * 72)
+    body = row["content"] or ""
+    print("  [본문 앞부분]")
+    print("  " + (body[:300] + "…" if len(body) > 300 else body))
+    print()
+
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -485,6 +585,8 @@ def main(argv: list[str] | None = None) -> int:
         "analyze": ("구간 D", "AI 인사이트 분석"),
         "report": ("구간 E", "차트·리포트"),
         "export": ("구간 E", "데이터 내보내기"),
+        "list": ("보너스", "기사 목록 조회"),
+        "show": ("보너스", "기사 상세 조회"),
     }
     stage, label = handlers[args.command]
     log.info("%s — %s", cfg.get("project_name"), label)
@@ -501,6 +603,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_report(args, cfg, log)
     if args.command == "export":
         return cmd_export(args, cfg, log)
+    if args.command == "list":
+        return cmd_list(args, cfg, log)
+    if args.command == "show":
+        return cmd_show(args, cfg, log)
 
     return not_ready(args.command, stage)
 

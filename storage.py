@@ -430,3 +430,51 @@ def select_for_export(conn: sqlite3.Connection, status: str = "all",
         params.append(category)
     sql += " ORDER BY published_date DESC, id"
     return conn.execute(sql, params).fetchall()
+
+
+# ====================================================================
+#  조회 (보너스 과제 — list / show)
+# ====================================================================
+
+def _filter_sql(category=None, date_from=None, date_to=None,
+                keyword=None, status="all") -> tuple[str, list]:
+    """목록 조회와 건수 세기가 같은 조건을 쓰도록 한 곳에서 만든다.
+
+    조건을 두 군데에 적으면 한쪽만 고쳤을 때 페이지 수가 어긋난다.
+    """
+    sql = " WHERE 1=1"
+    params: list = []
+    if category:
+        sql += " AND category = ?"; params.append(category)
+    if date_from:
+        sql += " AND published_date >= ?"; params.append(date_from)
+    if date_to:
+        sql += " AND published_date <= ?"; params.append(date_to)
+    if keyword:
+        sql += " AND (title LIKE ? OR summary LIKE ? OR content LIKE ?)"
+        like = f"%{keyword}%"
+        params += [like, like, like]
+    if status == "summarized":
+        sql += " AND summary IS NOT NULL AND TRIM(summary) <> ''"
+    elif status == "unsummarized":
+        sql += " AND (summary IS NULL OR TRIM(summary) = '')"
+    return sql, params
+
+
+def count_filtered(conn: sqlite3.Connection, **kw) -> int:
+    where, params = _filter_sql(**kw)
+    return conn.execute("SELECT COUNT(*) FROM clean_news" + where, params).fetchone()[0]
+
+
+def list_news(conn: sqlite3.Connection, page: int = 1, size: int = 10, **kw) -> list[sqlite3.Row]:
+    """페이지 단위로 목록을 꺼낸다. (보너스 — 페이지네이션)"""
+    where, params = _filter_sql(**kw)
+    sql = ("SELECT id, category, published_date, title, publisher, "
+           "CASE WHEN summary IS NULL OR TRIM(summary)='' THEN 0 ELSE 1 END AS has_summary "
+           "FROM clean_news" + where +
+           " ORDER BY published_date DESC, id DESC LIMIT ? OFFSET ?")
+    return conn.execute(sql, params + [size, (page - 1) * size]).fetchall()
+
+
+def get_news(conn: sqlite3.Connection, news_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM clean_news WHERE id = ?", (news_id,)).fetchone()

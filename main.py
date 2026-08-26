@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import ai_client
 import cleaner
 import collector
 import config
@@ -218,6 +219,59 @@ def cmd_clean(args, cfg: dict, log) -> int:
     return 0
 
 
+def cmd_summarize(args, cfg: dict, log) -> int:
+    """AI로 기사를 요약한다. (요건 4)"""
+    try:
+        api_key = config.get_api_key()
+    except config.ConfigError as e:
+        log.error("%s", e)
+        return 2
+    log.info("Gemini 키 확인: %s / 모델: %s",
+             config.mask(api_key), cfg.get("ai", {}).get("model"))
+
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.migrate_clean(conn)
+
+    mode = "unsummarized"
+    if args.all:
+        mode = "all"
+    elif args.id:
+        mode = "id"
+
+    rows = storage.select_for_summary(conn, mode, args.id, args.limit)
+    if not rows:
+        log.info("요약할 기사가 없습니다. (이미 전부 요약되었거나 clean 저장소가 비어 있음)")
+        conn.close()
+        return 0
+
+    log.info("요약 대상: %d건 (모드=%s)", len(rows), mode)
+    model = cfg.get("ai", {}).get("model", "")
+    ok = fail = 0
+
+    for i, row in enumerate(rows, 1):
+        body = row["content"] or ""
+        try:
+            summary = ai_client.summarize(row["title"], body, cfg, log, api_key)
+        except ai_client.AIError as e:
+            # 실패해도 멈추지 않는다. 기록만 남기고 다음 기사로. (요건 4)
+            log.error("[%d/%d] ID=%d 요약 실패 — 건너뜁니다: %s", i, len(rows), row["id"], e)
+            fail += 1
+            continue
+
+        storage.save_summary(conn, row["id"], summary, model)
+        conn.commit()
+        log.info("[%d/%d] ID=%d 요약 완료 (%d자 → %d자) [%s]",
+                 i, len(rows), row["id"], len(body), len(summary), row["category"])
+        ok += 1
+
+    log.info("요약 완료: %d건 성공, %d건 실패", ok, fail)
+    log.info("clean 저장소 %d건 중 %d건 요약됨",
+             storage.count_clean(conn), storage.count_summarized(conn))
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -256,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_fetch(args, cfg, log)
     if args.command == "clean":
         return cmd_clean(args, cfg, log)
+    if args.command == "summarize":
+        return cmd_summarize(args, cfg, log)
 
     return not_ready(args.command, stage)
 

@@ -99,7 +99,10 @@
     "user_agent": "BapsangTrendBot/1.0 (educational project; contact: 80gina@gmail.com)"
   },
   "ai": {
-    "model": "gemini-2.5-flash",
+    "model": "gemini-3.5-flash-lite",
+    "fallback_models": [
+      "gemini-3.1-flash-lite"
+    ],
     "max_input_chars": 4000,
     "summary_max_chars": 200
   },

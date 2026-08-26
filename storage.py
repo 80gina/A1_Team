@@ -236,3 +236,54 @@ def count_clean_by_category(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "SELECT category, COUNT(*) AS n FROM clean_news "
         "GROUP BY category ORDER BY n DESC"
     ).fetchall()
+
+
+# --- 요약 결과를 담을 컬럼 (요건 4) -----------------------------------
+SUMMARY_COLUMNS = {
+    "summary": "TEXT",
+    "summary_model": "TEXT",
+    "summarized_at": "TEXT",
+}
+
+
+def migrate_clean(conn: sqlite3.Connection) -> None:
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(clean_news)")}
+    for name, coltype in SUMMARY_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE clean_news ADD COLUMN {name} {coltype}")
+    conn.commit()
+
+
+def select_for_summary(conn: sqlite3.Connection, mode: str,
+                       news_id: int | None = None,
+                       limit: int | None = None) -> list[sqlite3.Row]:
+    """요약할 기사를 고른다.
+
+    mode="unsummarized"  아직 요약이 없는 것만 (기본)
+    mode="all"           전체 (다시 요약)
+    mode="id"            특정 한 건
+    """
+    base = "SELECT id, title, content, category FROM clean_news"
+    if mode == "id":
+        return conn.execute(base + " WHERE id = ?", (news_id,)).fetchall()
+    if mode == "all":
+        sql = base + " ORDER BY id"
+    else:
+        sql = base + " WHERE summary IS NULL OR TRIM(summary) = '' ORDER BY id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql).fetchall()
+
+
+def save_summary(conn: sqlite3.Connection, news_id: int, summary: str, model: str) -> None:
+    conn.execute(
+        "UPDATE clean_news SET summary = ?, summary_model = ?, summarized_at = ? "
+        "WHERE id = ?",
+        (summary, model, now_iso(), news_id),
+    )
+
+
+def count_summarized(conn: sqlite3.Connection) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM clean_news WHERE summary IS NOT NULL AND TRIM(summary) <> ''"
+    ).fetchone()[0]

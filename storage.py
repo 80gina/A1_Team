@@ -363,3 +363,12 @@ def select_for_analysis(conn: sqlite3.Connection, date_from=None, date_to=None,
         sql += " AND category = ?"; params.append(category)
     sql += " ORDER BY published_date, id"
     return conn.execute(sql, params).fetchall()
+
+
+def count_clean_by_date(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """일자별 기사 수. 추이 차트의 재료."""
+    return conn.execute(
+        "SELECT published_date, COUNT(*) AS n FROM clean_news "
+        "WHERE published_date IS NOT NULL GROUP BY published_date "
+        "ORDER BY published_date"
+    ).fetchall()

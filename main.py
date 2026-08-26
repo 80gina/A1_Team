@@ -23,6 +23,7 @@ import ai_client
 import cleaner
 import collector
 import config
+import reporter
 import storage
 
 
@@ -381,6 +382,32 @@ def cmd_analyze(args, cfg: dict, log) -> int:
     return 0
 
 
+def cmd_report(args, cfg: dict, log) -> int:
+    """차트를 그린다. (요건 6) — 리포트 본문은 다음 커밋에서 붙인다."""
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.init_analysis(conn)
+
+    if storage.count_clean(conn) == 0:
+        log.error("clean 저장소가 비어 있습니다. fetch → clean 을 먼저 실행하세요.")
+        conn.close()
+        return 1
+
+    reporter.setup_korean_font(log)
+    out = reporter.output_dir(cfg)
+
+    by_cat = storage.count_clean_by_category(conn)
+    by_date = storage.count_clean_by_date(conn)
+    log.info("차트 생성: 카테고리 %d종, 수집일 %d일", len(by_cat), len(by_date))
+
+    reporter.chart_category(by_cat, out, log)
+    reporter.chart_daily(by_date, out, log)
+
+    log.info("차트 2종을 %s 에 저장했습니다.", out)
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -423,6 +450,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_summarize(args, cfg, log)
     if args.command == "analyze":
         return cmd_analyze(args, cfg, log)
+    if args.command == "report":
+        return cmd_report(args, cfg, log)
 
     return not_ready(args.command, stage)
 

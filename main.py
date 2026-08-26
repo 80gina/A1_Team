@@ -383,7 +383,7 @@ def cmd_analyze(args, cfg: dict, log) -> int:
 
 
 def cmd_report(args, cfg: dict, log) -> int:
-    """차트를 그린다. (요건 6) — 리포트 본문은 다음 커밋에서 붙인다."""
+    """차트를 그리고 리포트를 만든다. (요건 6·7)"""
     conn = storage.connect(cfg)
     storage.init_clean(conn)
     storage.init_analysis(conn)
@@ -400,10 +400,29 @@ def cmd_report(args, cfg: dict, log) -> int:
     by_date = storage.count_clean_by_date(conn)
     log.info("차트 생성: 카테고리 %d종, 수집일 %d일", len(by_cat), len(by_date))
 
-    reporter.chart_category(by_cat, out, log)
-    reporter.chart_daily(by_date, out, log)
+    charts = [
+        reporter.chart_category(by_cat, out, log),
+        reporter.chart_daily(by_date, out, log),
+    ]
 
-    log.info("차트 2종을 %s 에 저장했습니다.", out)
+    if args.top:
+        cfg.setdefault("report", {})["top_n"] = args.top
+
+    metrics = storage.quality_metrics(conn)
+    analysis_row = storage.latest_analysis(conn)
+    if analysis_row is None:
+        log.warning("저장된 AI 분석이 없습니다. 리포트의 인사이트 절이 비어 있게 됩니다.")
+
+    text = reporter.build_report(cfg, metrics, by_cat, by_date, analysis_row, charts)
+
+    print()
+    print(text)
+
+    if args.save:
+        reporter.save_report(text, out, args.format, log)
+    else:
+        log.info("파일로 남기려면 --save 를 붙이세요. (예: report --save --format md)")
+
     conn.close()
     return 0
 

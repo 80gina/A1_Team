@@ -140,3 +140,124 @@ def output_dir(cfg: dict) -> Path:
     d = config.BASE_DIR / cfg.get("paths", {}).get("output_dir", "output")
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# ------------------------------------------------------- 리포트 (요건 7)
+
+def build_report(cfg: dict, metrics: dict, by_cat, by_date,
+                 analysis_row, charts: list[Path]) -> str:
+    """콘솔과 파일에 함께 쓸 리포트 본문을 만든다."""
+    import json as _json
+    from datetime import datetime
+
+    top_n = cfg.get("report", {}).get("top_n", 5)
+    lines: list[str] = []
+    add = lines.append
+
+    add(f"# {cfg.get('project_name', '뉴스 리포트')} 분석 리포트")
+    add("")
+    add(f"- 생성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    add(f"- 수집 소스: {', '.join(s['name'] for s in cfg.get('sources', []))}")
+    if by_date:
+        add(f"- 기사 기간: {by_date[0]['published_date']} ~ {by_date[-1]['published_date']}")
+    add("")
+
+    # --- 품질 지표 (요건 7 — 2개 이상) ---
+    add("## 1. 품질 지표")
+    add("")
+    add("| 지표 | 값 | 뜻 |")
+    add("|---|---|---|")
+    add(f"| 정제 통과율 | **{metrics['clean_rate']}%** "
+        f"({metrics['clean']}/{metrics['raw']}건) | 수집한 기사 중 음식·여행 기사의 비율 |")
+    add(f"| 요약 완료율 | **{metrics['summary_rate']}%** "
+        f"({metrics['summarized']}/{metrics['clean']}건) | 정제된 기사 중 AI 요약이 끝난 비율 |")
+    add(f"| 본문 확보율 | **{metrics['body_rate']}%** "
+        f"({metrics['with_body']}/{metrics['clean']}건) | 요약문 대신 실제 본문을 확보한 비율 |")
+    add(f"| 크롤링 도달률 | **{metrics['crawl_rate']}%** "
+        f"({metrics['crawled']}/{metrics['raw']}건) | 전체 수집분 중 본문까지 긁은 비율 |")
+    add("")
+
+    # --- TOP N (요건 7 — 1개 이상) ---
+    add(f"## 2. TOP {top_n} 집계")
+    add("")
+    add(f"### 카테고리별 기사 수 (상위 {top_n})")
+    add("")
+    total = sum(r["n"] for r in by_cat) or 1
+    for i, row in enumerate(by_cat[:top_n], 1):
+        share = round(row["n"] / total * 100, 1)
+        bar = "█" * max(1, round(row["n"] / by_cat[0]["n"] * 20))
+        add(f"{i}. {row['category']:<10} {row['n']:>3}건 ({share:>4}%)  {bar}")
+    add("")
+
+    if by_date:
+        busiest = max(by_date, key=lambda r: r["n"])
+        add(f"### 기사가 가장 많았던 날")
+        add("")
+        add(f"- **{busiest['published_date']}** — {busiest['n']}건")
+        add("")
+
+    # --- AI 인사이트 (요건 7) ---
+    add("## 3. AI 인사이트 분석")
+    add("")
+    if analysis_row is None:
+        add("> 저장된 분석 결과가 없습니다. `python main.py analyze` 를 먼저 실행하세요.")
+        add("")
+    else:
+        result = _json.loads(analysis_row["result_json"])
+        add(f"*분석 #{analysis_row['id']} · 기사 {analysis_row['article_count']}건 · "
+            f"모델 {analysis_row['model']}*")
+        add("")
+        add("### 주요 트렌드")
+        add("")
+        for t in result.get("trends", []):
+            add(f"- {t}")
+        add("")
+        add("### 핵심 키워드")
+        add("")
+        add(", ".join(result.get("keywords", [])))
+        add("")
+        add("### 공통점과 차이점")
+        add("")
+        add(result.get("comparison", ""))
+        add("")
+        add("### 시사점")
+        add("")
+        add(result.get("implications", ""))
+        add("")
+        add("### 레시피 소재 제안")
+        add("")
+        for idea in result.get("recipe_ideas", []):
+            add(f"- {idea}")
+        add("")
+
+    # --- 차트 ---
+    add("## 4. 차트")
+    add("")
+    for p in charts:
+        add(f"![{p.stem}]({p.name})")
+    add("")
+
+    return "\n".join(lines)
+
+
+def save_report(text: str, out_dir: Path, fmt: str, log) -> Path:
+    """리포트를 파일로 저장한다. md 는 그대로, txt 는 마크다운 기호를 걷어낸다."""
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+
+    if fmt == "txt":
+        plain = []
+        for line in text.splitlines():
+            line = line.replace("**", "").replace("`", "")
+            if line.startswith("#"):
+                line = line.lstrip("# ").strip()
+                plain.append(line)
+                plain.append("-" * (len(line) + 4))
+            else:
+                plain.append(line)
+        text = "\n".join(plain)
+
+    path = out_dir / f"report_{stamp}.{fmt}"
+    path.write_text(text, encoding="utf-8")
+    log.info("리포트 저장: %s", path.name)
+    return path

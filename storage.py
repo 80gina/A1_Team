@@ -372,3 +372,40 @@ def count_clean_by_date(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "WHERE published_date IS NOT NULL GROUP BY published_date "
         "ORDER BY published_date"
     ).fetchall()
+
+
+def quality_metrics(conn: sqlite3.Connection) -> dict:
+    """리포트에 넣을 품질 지표. (요건 7 — 2개 이상)
+
+    "몇 건 모았다"만으로는 파이프라인이 잘 도는지 알 수 없다.
+    각 단계에서 얼마나 살아남았는지를 비율로 봐야 어디가 병목인지 보인다.
+    """
+    raw = count_raw(conn)
+    clean = count_clean(conn)
+    summarized = count_summarized(conn)
+    with_body = conn.execute(
+        "SELECT COUNT(*) FROM clean_news WHERE body_source = 'content'"
+    ).fetchone()[0]
+    crawled = count_with_content(conn)
+
+    def pct(a: int, b: int) -> float:
+        return round(a / b * 100, 1) if b else 0.0
+
+    return {
+        "raw": raw,
+        "clean": clean,
+        "summarized": summarized,
+        "with_body": with_body,
+        "crawled": crawled,
+        "clean_rate": pct(clean, raw),          # 지표1 정제 통과율
+        "summary_rate": pct(summarized, clean),  # 지표2 요약 완료율
+        "body_rate": pct(with_body, clean),      # 지표3 본문 확보율
+        "crawl_rate": pct(crawled, raw),         # 지표4 크롤링 도달률
+    }
+
+
+def top_keywords_from_analysis(conn: sqlite3.Connection, n: int = 5) -> list[str]:
+    row = latest_analysis(conn)
+    if not row:
+        return []
+    return json.loads(row["result_json"]).get("keywords", [])[:n]

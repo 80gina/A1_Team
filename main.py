@@ -19,6 +19,7 @@ import argparse
 import sys
 
 import config
+import storage
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +85,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cmd_fetch(args, cfg: dict, log) -> int:
+    """뉴스 수집. 지금은 저장소를 준비하는 데까지만 동작한다."""
+    conn = storage.connect(cfg)
+    storage.init_db(conn)
+
+    db_path = config.resolve_path(cfg, "db")
+    log.info("raw 저장소 준비 완료: %s", db_path)
+
+    rows = storage.count_raw_by_source(conn)
+    total = storage.count_raw(conn)
+    log.info("현재 raw 저장소: 총 %d건", total)
+    for r in rows:
+        log.info("  - %s (%s): %d건", r["source_name"], r["method"], r["n"])
+
+    log.info("수집기는 아직 준비 중입니다. (커밋 3에서 추가됩니다)")
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -117,6 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     stage, label = handlers[args.command]
     log.info("%s — %s", cfg.get("project_name"), label)
+
+    if args.command == "fetch":
+        return cmd_fetch(args, cfg, log)
+
     return not_ready(args.command, stage)
 
 

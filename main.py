@@ -86,20 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_fetch(args, cfg: dict, log) -> int:
-    """뉴스를 수집해 raw 저장소에 넣는다. (요건 2)"""
-    conn = storage.connect(cfg)
-    storage.init_db(conn)
-
-    sources = collector.select_sources(cfg, args.source, args.method)
+def _fetch_rss(args, cfg, log, conn) -> tuple[int, int, int]:
+    """방법 1 — RSS 로 기사 목록을 모은다."""
+    sources = collector.select_sources(cfg, args.source, "rss")
     if not sources:
-        log.error("조건에 맞는 소스가 없습니다. (--source=%s, --method=%s)",
-                  args.source, args.method)
-        conn.close()
-        return 1
+        log.warning("RSS 소스가 없습니다. (--source=%s)", args.source)
+        return 0, 0, 0
 
-    log.info("뉴스 수집 시작: 소스 %d개, 소스당 최대 %d건", len(sources), args.limit)
-
+    log.info("[방법 1/RSS] 소스 %d개, 소스당 최대 %d건", len(sources), args.limit)
     saved = skipped = failed = 0
     for i, src in enumerate(sources, 1):
         try:
@@ -108,20 +102,71 @@ def cmd_fetch(args, cfg: dict, log) -> int:
             log.error("[%d/%d] %s 수집 실패: %s", i, len(sources), src["name"], e)
             failed += 1
             continue
-
         for item in items:
             if storage.insert_raw(conn, item):
                 saved += 1
             else:
                 skipped += 1
         conn.commit()
-
         if i < len(sources):
             collector.polite_sleep(cfg)
 
-    log.info("수집 완료: %d건 저장, %d건 중복 건너뜀, %d개 소스 실패",
+    log.info("[방법 1/RSS] %d건 저장, %d건 중복 건너뜀, %d개 소스 실패",
              saved, skipped, failed)
-    log.info("raw 저장소 총 %d건", storage.count_raw(conn))
+    return saved, skipped, failed
+
+
+def _fetch_crawl(args, cfg, log, conn) -> tuple[int, int]:
+    """방법 2 — 저장된 기사 주소를 방문해 본문을 긁어온다."""
+    targets = storage.select_uncrawled(conn, args.limit)
+    if not targets:
+        log.info("[방법 2/크롤링] 본문이 없는 기사가 없습니다. 할 일 없음.")
+        return 0, 0
+
+    log.info("[방법 2/크롤링] 대상 %d건 (요청 간격 %.1f초)",
+             len(targets), cfg.get("request", {}).get("delay_sec", 1.0))
+    ok = fail = 0
+    for i, row in enumerate(targets, 1):
+        try:
+            content, how = collector.crawl_article(row["url"], cfg, log)
+        except collector.FetchError as e:
+            log.warning("[%d/%d] ID=%d 본문 실패: %s", i, len(targets), row["id"], e)
+            fail += 1
+            collector.polite_sleep(cfg)
+            continue
+
+        if content:
+            storage.update_content(conn, row["id"], content)
+            conn.commit()
+            log.info("[%d/%d] ID=%d 본문 %d자 확보 — %s",
+                     i, len(targets), row["id"], len(content), how)
+            ok += 1
+        else:
+            log.warning("[%d/%d] ID=%d 본문을 찾지 못했습니다 (%s)",
+                        i, len(targets), row["id"], row["title"][:20])
+            fail += 1
+
+        collector.polite_sleep(cfg)
+
+    log.info("[방법 2/크롤링] %d건 성공, %d건 실패", ok, fail)
+    return ok, fail
+
+
+def cmd_fetch(args, cfg: dict, log) -> int:
+    """뉴스를 수집해 raw 저장소에 넣는다. (요건 2)"""
+    conn = storage.connect(cfg)
+    storage.init_db(conn)
+    storage.migrate(conn)
+
+    failed = 0
+    if args.method in ("rss", "all"):
+        _, _, failed = _fetch_rss(args, cfg, log, conn)
+    if args.method in ("crawl", "all"):
+        _fetch_crawl(args, cfg, log, conn)
+
+    total = storage.count_raw(conn)
+    with_body = storage.count_with_content(conn)
+    log.info("raw 저장소 총 %d건 (본문 확보 %d건)", total, with_body)
     for r in storage.count_raw_by_source(conn):
         log.info("  - %s (%s): %d건", r["source_name"], r["method"], r["n"])
 

@@ -1,7 +1,6 @@
 {
   "project_name": "팔도 밥상 트렌드",
   "description": "향토음식·미식 여행 뉴스 수집·분석 파이프라인",
-
   "sources": [
     {
       "name": "khan_life",
@@ -25,37 +24,102 @@
       "enabled": true
     }
   ],
-
   "categories": [
-    {"name": "향토음식",   "keywords": ["향토음식", "전통음식", "토속", "한식", "지역음식", "손맛", "종갓집", "발효"]},
-    {"name": "맛집·외식", "keywords": ["맛집", "식당", "외식", "레스토랑", "미쉐린", "미슐랭", "백년가게", "노포", "카페"]},
-    {"name": "식재료·제철", "keywords": ["제철", "식재료", "농산물", "수산물", "특산물", "산지", "김장", "나물", "수확"]},
-    {"name": "미식축제",   "keywords": ["음식축제", "먹거리", "푸드페스티벌", "미식주간", "장터", "축제"]},
-    {"name": "여행·관광",  "keywords": ["여행", "관광", "여행지", "관광객", "나들이", "둘레길", "명소", "숙박"]}
+    {
+      "name": "향토음식",
+      "keywords": [
+        "향토음식",
+        "전통음식",
+        "토속",
+        "한식",
+        "지역음식",
+        "손맛",
+        "종갓집",
+        "발효"
+      ]
+    },
+    {
+      "name": "맛집·외식",
+      "keywords": [
+        "맛집",
+        "식당",
+        "외식",
+        "레스토랑",
+        "미쉐린",
+        "미슐랭",
+        "백년가게",
+        "노포",
+        "카페"
+      ]
+    },
+    {
+      "name": "식재료·제철",
+      "keywords": [
+        "제철",
+        "식재료",
+        "농산물",
+        "수산물",
+        "특산물",
+        "산지",
+        "김장",
+        "나물",
+        "수확"
+      ]
+    },
+    {
+      "name": "미식축제",
+      "keywords": [
+        "음식축제",
+        "먹거리",
+        "푸드페스티벌",
+        "미식주간",
+        "장터",
+        "축제"
+      ]
+    },
+    {
+      "name": "여행·관광",
+      "keywords": [
+        "여행",
+        "관광",
+        "여행지",
+        "관광객",
+        "나들이",
+        "둘레길",
+        "명소",
+        "숙박"
+      ]
+    }
   ],
-
   "duplicate_policy": "skip",
-
   "request": {
     "timeout_sec": 10,
     "delay_sec": 1.0,
     "max_retry": 3,
     "user_agent": "BapsangTrendBot/1.0 (educational project; contact: 80gina@gmail.com)"
   },
-
   "ai": {
     "model": "gemini-2.5-flash",
     "max_input_chars": 4000,
     "summary_max_chars": 200
   },
-
   "report": {
     "top_n": 5
   },
-
   "paths": {
     "db": "data/bapsang.db",
     "output_dir": "output",
     "log_file": "logs/app.log"
+  },
+  "crawl": {
+    "selectors": [
+      "div.art_body",
+      "#articleBody",
+      "div.art_cont",
+      "div.content_text",
+      "article"
+    ],
+    "min_chars": 100,
+    "max_chars": 5000
   }
 }

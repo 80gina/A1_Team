@@ -1,0 +1,20 @@
+# 가상환경
+.venv/
+venv/
+
+# 파이썬 캐시
+__pycache__/
+*.py[cod]
+
+# 비밀 정보 (절대 커밋 금지)
+.env
+
+# 실행 중 생성되는 데이터·결과물
+data/
+output/
+logs/
+
+# 운영체제·에디터
+.DS_Store
+Thumbs.db
+.vscode/

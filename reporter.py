@@ -261,3 +261,83 @@ def save_report(text: str, out_dir: Path, fmt: str, log) -> Path:
     path.write_text(text, encoding="utf-8")
     log.info("리포트 저장: %s", path.name)
     return path
+
+
+# ---------------------------------------------------- 내보내기 (요건 8)
+
+def _stamp() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d_%H%M")
+
+
+def export_csv(rows, fields: list[str], out_dir: Path, log) -> Path:
+    """CSV 로 내보낸다.
+
+    encoding 을 'utf-8-sig' 로 쓰는 이유:
+        그냥 utf-8 로 저장하면 엑셀이 한글을 깨뜨려 연다.
+        맨 앞에 BOM 이라는 표식을 붙여야 엑셀이 'UTF-8이구나' 하고 알아본다.
+        A1-01 때 겪은 한글 깨짐과 같은 계열의 문제다.
+    """
+    import csv
+    path = out_dir / f"news_{_stamp()}.csv"
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row[k] for k in fields})
+    log.info("CSV 저장: %s (%d행)", path.name, len(rows))
+    return path
+
+
+def export_jsonl(rows, fields: list[str], out_dir: Path, log) -> Path:
+    """JSONL — 한 줄에 기사 하나. 프로그램이 이어받기 좋은 형식."""
+    import json as _json
+    path = out_dir / f"news_{_stamp()}.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(_json.dumps({k: row[k] for k in fields}, ensure_ascii=False) + "\n")
+    log.info("JSONL 저장: %s (%d행)", path.name, len(rows))
+    return path
+
+
+def export_excel(rows, fields: list[str], out_dir: Path, log) -> Path:
+    """엑셀 — 사람이 바로 열어 정렬·필터할 수 있게 꾸민다."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    HEADERS = {"id": "ID", "category": "카테고리", "published_date": "발행일",
+               "title": "제목", "summary": "AI 요약", "publisher": "언론사",
+               "source_name": "소스", "method": "수집방법",
+               "body_source": "본문출처", "matched_keywords": "분류 근거",
+               "url": "링크"}
+    WIDTHS = {"id": 6, "category": 12, "published_date": 12, "title": 45,
+              "summary": 60, "publisher": 10, "source_name": 14,
+              "method": 10, "body_source": 12, "matched_keywords": 20, "url": 40}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "뉴스"
+
+    header_fill = PatternFill("solid", fgColor="3D6FB4")
+    header_font = Font(color="FFFFFF", bold=True)
+    for c, key in enumerate(fields, 1):
+        cell = ws.cell(row=1, column=c, value=HEADERS.get(key, key))
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[get_column_letter(c)].width = WIDTHS.get(key, 15)
+
+    for r_i, row in enumerate(rows, 2):
+        for c_i, key in enumerate(fields, 1):
+            cell = ws.cell(row=r_i, column=c_i, value=row[key])
+            if key in ("title", "summary"):
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    ws.freeze_panes = "A2"                       # 제목 줄 고정
+    ws.auto_filter.ref = ws.dimensions           # 열마다 필터 버튼
+
+    path = out_dir / f"news_{_stamp()}.xlsx"
+    wb.save(path)
+    log.info("Excel 저장: %s (%d행)", path.name, len(rows))
+    return path

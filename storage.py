@@ -409,3 +409,24 @@ def top_keywords_from_analysis(conn: sqlite3.Connection, n: int = 5) -> list[str
     if not row:
         return []
     return json.loads(row["result_json"]).get("keywords", [])[:n]
+
+
+EXPORT_FIELDS = ["id", "category", "published_date", "title", "summary",
+                 "publisher", "source_name", "method", "body_source",
+                 "matched_keywords", "url"]
+
+
+def select_for_export(conn: sqlite3.Connection, status: str = "all",
+                      category: str | None = None) -> list[sqlite3.Row]:
+    """내보낼 기사를 고른다. (요건 8 — 필터링 옵션)"""
+    sql = f"SELECT {', '.join(EXPORT_FIELDS)} FROM clean_news WHERE 1=1"
+    params: list = []
+    if status == "summarized":
+        sql += " AND summary IS NOT NULL AND TRIM(summary) <> ''"
+    elif status == "unsummarized":
+        sql += " AND (summary IS NULL OR TRIM(summary) = '')"
+    if category:
+        sql += " AND category = ?"
+        params.append(category)
+    sql += " ORDER BY published_date DESC, id"
+    return conn.execute(sql, params).fetchall()

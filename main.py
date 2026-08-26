@@ -427,6 +427,34 @@ def cmd_report(args, cfg: dict, log) -> int:
     return 0
 
 
+def cmd_export(args, cfg: dict, log) -> int:
+    """데이터를 CSV / JSONL / Excel 로 내보낸다. (요건 8)"""
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.migrate_clean(conn)
+
+    rows = storage.select_for_export(conn, args.status, args.category)
+    if not rows:
+        log.warning("조건에 맞는 기사가 없습니다. (status=%s, category=%s)",
+                    args.status, args.category)
+        conn.close()
+        return 1
+
+    log.info("내보내기 대상: %d건 (status=%s%s)", len(rows), args.status,
+             f", category={args.category}" if args.category else "")
+
+    out = reporter.output_dir(cfg)
+    fields = storage.EXPORT_FIELDS
+    writers = {"csv": reporter.export_csv,
+               "jsonl": reporter.export_jsonl,
+               "excel": reporter.export_excel}
+    path = writers[args.format](rows, fields, out, log)
+
+    log.info("완료: %s", path)
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -471,6 +499,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_analyze(args, cfg, log)
     if args.command == "report":
         return cmd_report(args, cfg, log)
+    if args.command == "export":
+        return cmd_export(args, cfg, log)
 
     return not_ready(args.command, stage)
 

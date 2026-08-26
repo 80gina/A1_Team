@@ -138,10 +138,18 @@ def migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def select_uncrawled(conn: sqlite3.Connection, limit: int | None = None) -> list[sqlite3.Row]:
-    """아직 본문이 없는 기사만 고른다. 같은 기사를 두 번 긁지 않기 위해."""
-    sql = ("SELECT id, url, title FROM raw_news "
-           "WHERE content IS NULL OR TRIM(content) = '' ORDER BY id")
+def select_uncrawled(conn: sqlite3.Connection, limit: int | None = None,
+                     only_clean: bool = False) -> list[sqlite3.Row]:
+    """아직 본문이 없는 기사만 고른다. 같은 기사를 두 번 긁지 않기 위해.
+
+    only_clean=True 이면 정제를 통과한 기사(= 음식·여행 기사)만 긁는다.
+    주제와 상관없는 정치·증시 기사까지 방문할 이유가 없다.
+    남의 서버에 보내는 요청을 줄이는 것이 곧 크롤링 예절이다.
+    """
+    where = "(content IS NULL OR TRIM(content) = '')"
+    if only_clean:
+        where += " AND id IN (SELECT raw_id FROM clean_news)"
+    sql = f"SELECT id, url, title FROM raw_news WHERE {where} ORDER BY id"
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()
@@ -287,3 +295,71 @@ def count_summarized(conn: sqlite3.Connection) -> int:
     return conn.execute(
         "SELECT COUNT(*) FROM clean_news WHERE summary IS NOT NULL AND TRIM(summary) <> ''"
     ).fetchone()[0]
+
+
+def prune_clean(conn: sqlite3.Connection, keep_urls: list[str]) -> int:
+    """지금 규칙으로 통과하지 못하는 기사를 clean 에서 지운다.
+
+    raw 는 건드리지 않는다. 원본이 남아 있으므로 규칙을 되돌리면
+    언제든 다시 만들어낼 수 있다 — 이것이 raw/clean 을 나눈 이유다.
+    """
+    if not keep_urls:
+        return 0
+    marks = ", ".join("?" * len(keep_urls))
+    cur = conn.execute(f"DELETE FROM clean_news WHERE url NOT IN ({marks})", keep_urls)
+    return cur.rowcount
+
+
+# ====================================================================
+#  분석 결과 저장소 (요건 5 — "분석 결과는 별도 저장하여 리포트에 활용")
+# ====================================================================
+SCHEMA_ANALYSIS = """
+CREATE TABLE IF NOT EXISTS analyses (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_from     TEXT,
+    date_to       TEXT,
+    category      TEXT,
+    article_count INTEGER NOT NULL,
+    result_json   TEXT NOT NULL,   -- 분석 결과 전체를 JSON 문자열로
+    model         TEXT,
+    created_at    TEXT NOT NULL
+);
+"""
+
+
+def init_analysis(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_ANALYSIS)
+    conn.commit()
+
+
+def save_analysis(conn: sqlite3.Connection, date_from, date_to, category,
+                  count: int, result: dict, model: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO analyses (date_from, date_to, category, article_count, "
+        "result_json, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (date_from, date_to, category, count,
+         json.dumps(result, ensure_ascii=False), model, now_iso()),
+    )
+    return cur.lastrowid
+
+
+def latest_analysis(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM analyses ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def select_for_analysis(conn: sqlite3.Connection, date_from=None, date_to=None,
+                        category=None) -> list[sqlite3.Row]:
+    """조건에 맞는 clean 기사를 고른다. (요건 5 — 기간·카테고리별)"""
+    sql = ("SELECT id, title, summary, content, category, published_date "
+           "FROM clean_news WHERE 1=1")
+    params: list = []
+    if date_from:
+        sql += " AND published_date >= ?"; params.append(date_from)
+    if date_to:
+        sql += " AND published_date <= ?"; params.append(date_to)
+    if category:
+        sql += " AND category = ?"; params.append(category)
+    sql += " ORDER BY published_date, id"
+    return conn.execute(sql, params).fetchall()

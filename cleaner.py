@@ -83,14 +83,34 @@ def normalize_date(raw: str | None) -> tuple[str | None, str | None]:
 def classify(text: str, categories: list[dict]) -> tuple[str | None, list[str]]:
     """키워드로 카테고리를 정한다. (카테고리명, 걸린 키워드들)
 
-    config.json 에 적힌 순서대로 검사해 먼저 걸리는 것을 쓴다.
-    '축제' 같은 넓은 단어가 뒤쪽에 오도록 순서를 잡아두었다.
+    조건이 세 가지다.
+      keywords     — 이 중 하나라도 있으면 후보  (필수)
+      require_any  — 후보가 되려면 이 중 하나도 함께 있어야 함  (선택)
+      exclude      — 이 중 하나라도 있으면 탈락  (선택)
+
+    require_any 를 넣은 이유
+      '축제' 하나만 보면 영화제·음악축제까지 미식축제로 들어온다.
+      그렇다고 '음식축제' 같은 긴 말만 찾으면 대부분을 놓친다.
+      그래서 '축제' 와 '음식·먹거리·맛' 중 하나가 **함께** 있을 때만 인정한다.
+
+    exclude 를 넣은 이유
+      실제로 '번개장터'(중고거래) 기사가 '장터' 때문에 미식축제로 분류됐다.
+      규칙을 좁히는 것만으로는 부족해서, 확실히 아닌 말을 따로 적어둔다.
     """
     lowered = text.lower()
     for cat in categories:
+        if any(bad.lower() in lowered for bad in cat.get("exclude", [])):
+            continue
         hits = [kw for kw in cat.get("keywords", []) if kw.lower() in lowered]
-        if hits:
-            return cat["name"], hits
+        if not hits:
+            continue
+        need = cat.get("require_any")
+        if need:
+            extra = [kw for kw in need if kw.lower() in lowered]
+            if not extra:
+                continue
+            hits = hits + extra[:2]
+        return cat["name"], hits
     return None, []
 
 

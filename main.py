@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 import ai_client
@@ -47,12 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("--method", choices=["rss", "crawl", "all"], default="rss",
                          help="수집 방법 (기본: rss)")
     p_fetch.add_argument("--limit", type=int, default=20, help="소스당 최대 건수 (기본: 20)")
+    p_fetch.add_argument("--target", choices=["all", "clean"], default="all",
+                         help="크롤링 대상: all=전체, clean=정제를 통과한 음식·여행 기사만")
 
     # 2) clean — 정제
     p_clean = sub.add_parser("clean", help="raw 데이터를 정제해 clean 저장소에 넣는다")
     p_clean.add_argument("--policy", choices=["skip", "upsert"],
                          help="중복 처리 정책 (생략하면 config.json 값)")
     p_clean.add_argument("--limit", type=int, help="처리할 최대 건수")
+    p_clean.add_argument("--rebuild", action="store_true",
+                         help="분류 규칙을 고친 뒤 clean 저장소를 raw 기준으로 다시 맞춘다")
 
     # 3) summarize — AI 요약
     p_sum = sub.add_parser("summarize", help="AI로 기사를 요약한다")
@@ -120,7 +125,11 @@ def _fetch_rss(args, cfg, log, conn) -> tuple[int, int, int]:
 
 def _fetch_crawl(args, cfg, log, conn) -> tuple[int, int]:
     """방법 2 — 저장된 기사 주소를 방문해 본문을 긁어온다."""
-    targets = storage.select_uncrawled(conn, args.limit)
+    only_clean = args.target == "clean"
+    if only_clean:
+        storage.init_clean(conn)
+        log.info("[방법 2/크롤링] 정제를 통과한 기사만 대상으로 합니다.")
+    targets = storage.select_uncrawled(conn, args.limit, only_clean)
     if not targets:
         log.info("[방법 2/크롤링] 본문이 없는 기사가 없습니다. 할 일 없음.")
         return 0, 0
@@ -184,6 +193,9 @@ def cmd_clean(args, cfg: dict, log) -> int:
     storage.init_clean(conn)
 
     policy = args.policy or cfg.get("duplicate_policy", "skip")
+    if args.rebuild:
+        policy = "upsert"   # 다시 맞추려면 덮어써야 한다
+        log.info("재구축 모드: 규칙에 더는 맞지 않는 기사는 clean 에서 제거됩니다.")
     rows = storage.select_raw(conn, args.limit)
     if not rows:
         log.warning("raw 저장소가 비어 있습니다. 먼저 fetch 를 실행하세요.")
@@ -194,6 +206,7 @@ def cmd_clean(args, cfg: dict, log) -> int:
 
     stats = {"saved": 0, "updated": 0, "skipped": 0}
     dropped: dict[str, int] = {}
+    valid_urls: list[str] = []
 
     for row in rows:
         item, reason = cleaner.clean_row(row, cfg.get("categories", []))
@@ -202,8 +215,14 @@ def cmd_clean(args, cfg: dict, log) -> int:
             log.debug("제외 (ID=%d, %s): %s", row["id"], reason, (row["title"] or "")[:30])
             continue
         result = storage.upsert_clean(conn, item, policy)
+        valid_urls.append(item["url"])
         stats[result] += 1
     conn.commit()
+
+    if args.rebuild:
+        removed = storage.prune_clean(conn, valid_urls)
+        conn.commit()
+        log.info("재구축: 규칙에 맞지 않게 된 %d건을 clean 에서 제거했습니다.", removed)
 
     total_dropped = sum(dropped.values())
     log.info("정제 완료: %d건 저장, %d건 갱신, %d건 건너뜀, %d건 제외",
@@ -272,6 +291,96 @@ def cmd_summarize(args, cfg: dict, log) -> int:
     return 0
 
 
+def _print_analysis(result: dict, header: str) -> None:
+    """분석 결과를 사람이 읽기 좋게 출력한다."""
+    print()
+    print("=" * 62)
+    print(f"  AI 인사이트 분석 결과 — {header}")
+    print("=" * 62)
+
+    print("\n[주요 트렌드]")
+    for t in result.get("trends", []):
+        print(f"  - {t}")
+
+    print("\n[핵심 키워드]")
+    print("  " + ", ".join(result.get("keywords", [])))
+
+    print("\n[공통점과 차이점]")
+    print(f"  {result.get('comparison', '')}")
+
+    print("\n[시사점]")
+    print(f"  {result.get('implications', '')}")
+
+    print("\n[레시피 소재 제안]")
+    for r in result.get("recipe_ideas", []):
+        print(f"  - {r}")
+    print()
+
+
+def cmd_analyze(args, cfg: dict, log) -> int:
+    """기간·카테고리별 뉴스를 종합해 인사이트를 뽑는다. (요건 5)"""
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.init_analysis(conn)
+
+    # --show 는 저장된 결과를 다시 보여주기만 한다 (API 호출 없음)
+    if args.show:
+        row = storage.latest_analysis(conn)
+        if not row:
+            log.warning("저장된 분석 결과가 없습니다. 먼저 analyze 를 실행하세요.")
+            conn.close()
+            return 1
+        log.info("저장된 분석 #%d (%s, 기사 %d건, 모델 %s)",
+                 row["id"], row["created_at"], row["article_count"], row["model"])
+        _print_analysis(json.loads(row["result_json"]),
+                        f"저장본 #{row['id']}")
+        conn.close()
+        return 0
+
+    rows = storage.select_for_analysis(conn, args.date_from, args.date_to, args.category)
+    if not rows:
+        log.warning("조건에 맞는 기사가 없습니다. (기간=%s~%s, 카테고리=%s)",
+                    args.date_from, args.date_to, args.category)
+        conn.close()
+        return 1
+
+    try:
+        api_key = config.get_api_key()
+    except config.ConfigError as e:
+        log.error("%s", e)
+        conn.close()
+        return 2
+
+    log.info("분석 대상: %d건", len(rows))
+    lines = []
+    for i, r in enumerate(rows, 1):
+        body = (r["summary"] or r["content"] or "")[:400]
+        lines.append(f"{i}. [{r['category']}] ({r['published_date']}) {r['title']}\n   {body}")
+    articles_text = "\n".join(lines)
+
+    period = f"{args.date_from or rows[0]['published_date']} ~ {args.date_to or rows[-1]['published_date']}"
+    log.info("AI 분석 요청 중... (기간 %s%s)",
+             period, f", 카테고리 {args.category}" if args.category else "")
+
+    try:
+        result = ai_client.analyze(articles_text, period, len(rows), cfg, log, api_key)
+    except ai_client.AIError as e:
+        log.error("분석 실패: %s", e)
+        conn.close()
+        return 3
+
+    model = cfg.get("ai", {}).get("model", "")
+    analysis_id = storage.save_analysis(conn, args.date_from, args.date_to,
+                                        args.category, len(rows), result, model)
+    conn.commit()
+    log.info("분석 완료 — 결과를 저장했습니다 (분석 #%d)", analysis_id)
+
+    header = period + (f" / {args.category}" if args.category else " / 전체")
+    _print_analysis(result, header)
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -312,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_clean(args, cfg, log)
     if args.command == "summarize":
         return cmd_summarize(args, cfg, log)
+    if args.command == "analyze":
+        return cmd_analyze(args, cfg, log)
 
     return not_ready(args.command, stage)
 

@@ -155,3 +155,53 @@ def summarize(title: str, body: str, cfg: dict, log, api_key: str) -> str:
         body=body[: ai.get("max_input_chars", 4000)],
     )
     return generate(prompt, cfg, log, api_key)
+
+
+# --------------------------------------------------- 인사이트 분석 (요건 5)
+
+# 응답을 이 구조로 강제한다. 자유 형식으로 받으면
+# "핵심 키워드 5개"를 프로그램이 꺼내 차트에 넘길 수 없다.
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "trends":      {"type": "array", "items": {"type": "string"}},
+        "keywords":    {"type": "array", "items": {"type": "string"}},
+        "comparison":  {"type": "string"},
+        "implications": {"type": "string"},
+        "recipe_ideas": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["trends", "keywords", "comparison", "implications", "recipe_ideas"],
+}
+
+ANALYSIS_PROMPT = """당신은 음식·여행 분야 트렌드 분석가입니다.
+아래는 {period} 사이에 수집된 음식·여행 뉴스 {count}건의 요약입니다.
+전체를 종합해 분석하세요.
+
+분석 항목:
+1. trends       — 이 기간의 주요 트렌드 3~5개. 각 항목은 한 문장.
+2. keywords     — 핵심 키워드 5~8개. 명사만. 설명 없이 단어만.
+3. comparison   — 카테고리 간 공통점과 차이점. 3~4문장.
+4. implications — 시사점. 앞으로 무엇이 예상되는지 3~4문장.
+5. recipe_ideas — 이 뉴스들에서 소재를 얻을 수 있는 요리·레시피 주제 3개.
+                  뉴스에 실제로 등장한 음식이나 식재료를 근거로 삼을 것.
+
+기사 목록:
+{articles}
+"""
+
+
+def analyze(articles_text: str, period: str, count: int,
+            cfg: dict, log, api_key: str) -> dict:
+    """여러 기사를 종합해 구조화된 분석 결과를 돌려준다."""
+    prompt = ANALYSIS_PROMPT.format(period=period, count=count, articles=articles_text)
+    text = generate(prompt, cfg, log, api_key, schema=ANALYSIS_SCHEMA)
+
+    # 스키마를 강제해도 코드블록이 섞여 오는 경우가 드물게 있다. 한 번 걷어낸다.
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        cleaned = cleaned[4:] if cleaned.lower().startswith("json") else cleaned
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise AIError(f"분석 결과를 JSON으로 읽지 못했습니다: {e}\n받은 내용: {text[:200]}") from e

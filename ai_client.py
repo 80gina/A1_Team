@@ -205,3 +205,44 @@ def analyze(articles_text: str, period: str, count: int,
         return json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise AIError(f"분석 결과를 JSON으로 읽지 못했습니다: {e}\n받은 내용: {text[:200]}") from e
+
+
+# ------------------------------------------- 감성 분석 (보너스 과제)
+
+SENTIMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sentiment": {"type": "string", "enum": ["긍정", "중립", "부정"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["sentiment", "reason"],
+}
+
+SENTIMENT_PROMPT = """다음 음식·여행 뉴스가 어떤 논조인지 판정하세요.
+
+판정 기준:
+- 긍정: 성과, 개막, 흥행, 선정, 확대처럼 좋은 소식
+- 부정: 사고, 논란, 폐업, 감소, 단속처럼 나쁜 소식
+- 중립: 사실 전달 위주이거나 좋고 나쁨을 가리기 어려운 경우
+
+reason 은 판정 근거를 20자 이내로 씁니다.
+
+[제목] {title}
+[내용] {body}
+"""
+
+
+def sentiment(title: str, body: str, cfg: dict, log, api_key: str) -> dict:
+    """기사 하나의 감성을 판정한다."""
+    prompt = SENTIMENT_PROMPT.format(
+        title=title, body=body[: cfg.get("ai", {}).get("max_input_chars", 4000)]
+    )
+    text = generate(prompt, cfg, log, api_key, schema=SENTIMENT_SCHEMA)
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("```")[1]
+        cleaned = cleaned[4:] if cleaned.lower().startswith("json") else cleaned
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise AIError(f"감성 결과를 JSON으로 읽지 못했습니다: {text[:150]}") from e

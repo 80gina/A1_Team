@@ -41,6 +41,11 @@ INK        = "#1F2933"   # 제목·값
 MUTED      = "#6B7280"   # 축 이름
 GRID       = "#E5E7EB"   # 격자
 BAR        = "#3D6FB4"   # 막대
+
+# 감성은 '좋음 ↔ 나쁨' 양 끝이 있는 값이다.
+# 그래서 서로 반대되는 두 색과, 가운데를 뜻하는 회색을 쓴다.
+# 무지개색을 쓰면 어느 쪽이 나쁜 소식인지 읽을 수 없다.
+SENTIMENT_COLORS = {"긍정": "#3D6FB4", "중립": "#9CA3AF", "부정": "#C2603F"}
 LINE       = "#3D6FB4"   # 선
 SURFACE    = "#FFFFFF"
 
@@ -145,7 +150,7 @@ def output_dir(cfg: dict) -> Path:
 # ------------------------------------------------------- 리포트 (요건 7)
 
 def build_report(cfg: dict, metrics: dict, by_cat, by_date,
-                 analysis_row, charts: list[Path]) -> str:
+                 analysis_row, charts: list[Path], by_sentiment=None) -> str:
     """콘솔과 파일에 함께 쓸 리포트 본문을 만든다."""
     import json as _json
     from datetime import datetime
@@ -194,6 +199,16 @@ def build_report(cfg: dict, metrics: dict, by_cat, by_date,
         add(f"### 기사가 가장 많았던 날")
         add("")
         add(f"- **{busiest['published_date']}** — {busiest['n']}건")
+        add("")
+
+    # --- 감성 분포 (보너스) ---
+    if by_sentiment:
+        add("### 감성 분포 (보너스)")
+        add("")
+        s_total = sum(r["n"] for r in by_sentiment) or 1
+        for row in by_sentiment:
+            share = round(row["n"] / s_total * 100, 1)
+            add(f"- {row['sentiment']}: {row['n']}건 ({share}%)")
         add("")
 
     # --- AI 인사이트 (요건 7) ---
@@ -340,4 +355,38 @@ def export_excel(rows, fields: list[str], out_dir: Path, log) -> Path:
     path = out_dir / f"news_{_stamp()}.xlsx"
     wb.save(path)
     log.info("Excel 저장: %s (%d행)", path.name, len(rows))
+    return path
+
+
+def chart_sentiment(rows, out_dir: Path, log) -> Path:
+    """[보너스] 차트 3 — 감성 분포 (세로 막대)
+
+    막대가 셋뿐이고 이름이 짧아서 세로로 세운다.
+    색은 긍정·부정을 서로 반대되는 색으로, 중립은 회색으로 둔다.
+    """
+    labels = [r["sentiment"] for r in rows]
+    values = [r["n"] for r in rows]
+    colors = [SENTIMENT_COLORS.get(l, BAR) for l in labels]
+    total = sum(values) or 1
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.5), dpi=150)
+    bars = ax.bar(labels, values, color=colors, width=0.55)
+    _style(ax)
+    ax.yaxis.grid(True, color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    ax.set_ylabel("기사 수 (건)", color=MUTED, fontsize=10)
+    ax.set_title("뉴스 감성 분포", fontsize=14, pad=14, loc="left")
+    ax.set_ylim(0, max(values) * 1.2)
+
+    for bar, v in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + max(values) * 0.03,
+                f"{v}건 ({round(v / total * 100)}%)",
+                ha="center", color=INK, fontsize=10)
+
+    path = out_dir / "chart_sentiment.png"
+    fig.tight_layout()
+    fig.savefig(path, facecolor=SURFACE)
+    plt.close(fig)
+    log.info("차트 저장: %s", path.name)
     return path

@@ -102,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--page", type=int, default=1, help="페이지 번호 (기본: 1)")
     p_list.add_argument("--size", type=int, default=10, help="한 페이지 건수 (기본: 10)")
 
+    p_sent = sub.add_parser("sentiment",
+                            help="[보너스] 기사의 긍정/부정/중립을 AI로 판정한다")
+    p_sent.add_argument("--all", action="store_true", help="이미 판정된 것도 다시")
+    p_sent.add_argument("--limit", type=int, default=20, help="최대 건수 (기본: 20)")
+
     p_show = sub.add_parser("show", help="[보너스] 기사 한 건을 자세히 본다")
     p_show.add_argument("id", type=int, help="기사 ID")
 
@@ -419,6 +424,12 @@ def cmd_report(args, cfg: dict, log) -> int:
         reporter.chart_daily(by_date, out, log),
     ]
 
+    by_sentiment = storage.count_by_sentiment(conn)
+    if by_sentiment:
+        charts.append(reporter.chart_sentiment(by_sentiment, out, log))
+    else:
+        log.info("감성 판정 결과가 없어 감성 차트는 건너뜁니다. (보너스: sentiment 명령)")
+
     if args.top:
         cfg.setdefault("report", {})["top_n"] = args.top
 
@@ -427,7 +438,8 @@ def cmd_report(args, cfg: dict, log) -> int:
     if analysis_row is None:
         log.warning("저장된 AI 분석이 없습니다. 리포트의 인사이트 절이 비어 있게 됩니다.")
 
-    text = reporter.build_report(cfg, metrics, by_cat, by_date, analysis_row, charts)
+    text = reporter.build_report(cfg, metrics, by_cat, by_date, analysis_row,
+                                 charts, by_sentiment)
 
     print()
     print(text)
@@ -555,6 +567,48 @@ def cmd_show(args, cfg: dict, log) -> int:
     return 0
 
 
+def cmd_sentiment(args, cfg: dict, log) -> int:
+    """[보너스] 기사마다 긍정/중립/부정을 판정한다."""
+    try:
+        api_key = config.get_api_key()
+    except config.ConfigError as e:
+        log.error("%s", e)
+        return 2
+
+    conn = storage.connect(cfg)
+    storage.init_clean(conn)
+    storage.migrate_clean(conn)
+
+    rows = storage.select_for_sentiment(conn, args.all, args.limit)
+    if not rows:
+        log.info("감성을 판정할 기사가 없습니다. (--all 을 붙이면 전체를 다시 판정합니다)")
+        conn.close()
+        return 0
+
+    log.info("감성 판정 대상: %d건", len(rows))
+    ok = fail = 0
+    for i, row in enumerate(rows, 1):
+        body = row["summary"] or row["content"] or ""
+        try:
+            result = ai_client.sentiment(row["title"], body, cfg, log, api_key)
+        except ai_client.AIError as e:
+            log.error("[%d/%d] ID=%d 판정 실패 — 건너뜁니다: %s", i, len(rows), row["id"], e)
+            fail += 1
+            continue
+        storage.save_sentiment(conn, row["id"], result["sentiment"], result.get("reason", ""))
+        conn.commit()
+        log.info("[%d/%d] ID=%d → %s (%s)", i, len(rows), row["id"],
+                 result["sentiment"], result.get("reason", "")[:24])
+        ok += 1
+
+    log.info("감성 판정 완료: %d건 성공, %d건 실패", ok, fail)
+    for r in storage.count_by_sentiment(conn):
+        log.info("  - %s: %d건", r["sentiment"], r["n"])
+    log.info("차트로 보려면 report 를 다시 실행하세요.")
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -586,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         "report": ("구간 E", "차트·리포트"),
         "export": ("구간 E", "데이터 내보내기"),
         "list": ("보너스", "기사 목록 조회"),
+        "sentiment": ("보너스", "감성 분석"),
         "show": ("보너스", "기사 상세 조회"),
     }
     stage, label = handlers[args.command]
@@ -603,6 +658,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_report(args, cfg, log)
     if args.command == "export":
         return cmd_export(args, cfg, log)
+    if args.command == "sentiment":
+        return cmd_sentiment(args, cfg, log)
     if args.command == "list":
         return cmd_list(args, cfg, log)
     if args.command == "show":

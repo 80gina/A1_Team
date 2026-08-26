@@ -251,6 +251,10 @@ SUMMARY_COLUMNS = {
     "summary": "TEXT",
     "summary_model": "TEXT",
     "summarized_at": "TEXT",
+    # 보너스 — 감성 분석
+    "sentiment": "TEXT",
+    "sentiment_reason": "TEXT",
+    "sentiment_at": "TEXT",
 }
 
 
@@ -412,8 +416,8 @@ def top_keywords_from_analysis(conn: sqlite3.Connection, n: int = 5) -> list[str
 
 
 EXPORT_FIELDS = ["id", "category", "published_date", "title", "summary",
-                 "publisher", "source_name", "method", "body_source",
-                 "matched_keywords", "url"]
+                 "sentiment", "publisher", "source_name", "method",
+                 "body_source", "matched_keywords", "url"]
 
 
 def select_for_export(conn: sqlite3.Connection, status: str = "all",
@@ -478,3 +482,34 @@ def list_news(conn: sqlite3.Connection, page: int = 1, size: int = 10, **kw) -> 
 
 def get_news(conn: sqlite3.Connection, news_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM clean_news WHERE id = ?", (news_id,)).fetchone()
+
+
+def select_for_sentiment(conn: sqlite3.Connection, redo: bool = False,
+                         limit: int | None = None) -> list[sqlite3.Row]:
+    """[보너스] 감성 판정이 필요한 기사를 고른다."""
+    sql = "SELECT id, title, summary, content, category FROM clean_news"
+    if not redo:
+        sql += " WHERE sentiment IS NULL OR TRIM(sentiment) = ''"
+    sql += " ORDER BY id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    return conn.execute(sql).fetchall()
+
+
+def save_sentiment(conn: sqlite3.Connection, news_id: int,
+                   label: str, reason: str) -> None:
+    conn.execute(
+        "UPDATE clean_news SET sentiment = ?, sentiment_reason = ?, "
+        "sentiment_at = ? WHERE id = ?",
+        (label, reason, now_iso(), news_id),
+    )
+
+
+def count_by_sentiment(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """[보너스] 감성별 건수. 긍정 → 중립 → 부정 순서로 고정한다."""
+    return conn.execute(
+        "SELECT sentiment, COUNT(*) AS n FROM clean_news "
+        "WHERE sentiment IS NOT NULL AND TRIM(sentiment) <> '' "
+        "GROUP BY sentiment "
+        "ORDER BY CASE sentiment WHEN '긍정' THEN 1 WHEN '중립' THEN 2 ELSE 3 END"
+    ).fetchall()

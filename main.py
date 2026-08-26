@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import collector
 import config
 import storage
 
@@ -86,22 +87,46 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_fetch(args, cfg: dict, log) -> int:
-    """뉴스 수집. 지금은 저장소를 준비하는 데까지만 동작한다."""
+    """뉴스를 수집해 raw 저장소에 넣는다. (요건 2)"""
     conn = storage.connect(cfg)
     storage.init_db(conn)
 
-    db_path = config.resolve_path(cfg, "db")
-    log.info("raw 저장소 준비 완료: %s", db_path)
+    sources = collector.select_sources(cfg, args.source, args.method)
+    if not sources:
+        log.error("조건에 맞는 소스가 없습니다. (--source=%s, --method=%s)",
+                  args.source, args.method)
+        conn.close()
+        return 1
 
-    rows = storage.count_raw_by_source(conn)
-    total = storage.count_raw(conn)
-    log.info("현재 raw 저장소: 총 %d건", total)
-    for r in rows:
+    log.info("뉴스 수집 시작: 소스 %d개, 소스당 최대 %d건", len(sources), args.limit)
+
+    saved = skipped = failed = 0
+    for i, src in enumerate(sources, 1):
+        try:
+            items = collector.collect_rss(src, cfg, log, args.limit)
+        except collector.FetchError as e:
+            log.error("[%d/%d] %s 수집 실패: %s", i, len(sources), src["name"], e)
+            failed += 1
+            continue
+
+        for item in items:
+            if storage.insert_raw(conn, item):
+                saved += 1
+            else:
+                skipped += 1
+        conn.commit()
+
+        if i < len(sources):
+            collector.polite_sleep(cfg)
+
+    log.info("수집 완료: %d건 저장, %d건 중복 건너뜀, %d개 소스 실패",
+             saved, skipped, failed)
+    log.info("raw 저장소 총 %d건", storage.count_raw(conn))
+    for r in storage.count_raw_by_source(conn):
         log.info("  - %s (%s): %d건", r["source_name"], r["method"], r["n"])
 
-    log.info("수집기는 아직 준비 중입니다. (커밋 3에서 추가됩니다)")
     conn.close()
-    return 0
+    return 0 if failed == 0 else 3
 
 
 def not_ready(name: str, stage: str) -> int:

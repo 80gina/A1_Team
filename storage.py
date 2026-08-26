@@ -160,3 +160,79 @@ def count_with_content(conn: sqlite3.Connection) -> int:
     return conn.execute(
         "SELECT COUNT(*) FROM raw_news WHERE content IS NOT NULL AND TRIM(content) <> ''"
     ).fetchone()[0]
+
+
+# ====================================================================
+#  clean 저장소 (요건 3)
+#  raw 와 같은 파일 안의 '다른 테이블' 이다. 서랍장 하나에 서랍 두 칸.
+# ====================================================================
+SCHEMA_CLEAN = """
+CREATE TABLE IF NOT EXISTS clean_news (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    raw_id           INTEGER,
+    url              TEXT NOT NULL UNIQUE,
+    title            TEXT NOT NULL,
+    description      TEXT,
+    content          TEXT,
+    body_source      TEXT,      -- 본문을 content 에서 얻었나 description 에서 얻었나
+    category         TEXT,      -- 향토음식 / 맛집·외식 / 식재료·제철 / 미식축제 / 여행·관광
+    matched_keywords TEXT,      -- 어떤 단어 때문에 그 카테고리가 됐는가
+    published_date   TEXT,      -- YYYY-MM-DD 로 통일된 날짜
+    published_at     TEXT,
+    publisher        TEXT,
+    source_name      TEXT,
+    method           TEXT,
+    cleaned_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_clean_cat  ON clean_news(category);
+CREATE INDEX IF NOT EXISTS idx_clean_date ON clean_news(published_date);
+"""
+
+CLEAN_FIELDS = ["raw_id", "url", "title", "description", "content", "body_source",
+                "category", "matched_keywords", "published_date", "published_at",
+                "publisher", "source_name", "method"]
+
+
+def init_clean(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_CLEAN)
+    conn.commit()
+
+
+def upsert_clean(conn: sqlite3.Connection, item: dict, policy: str = "skip") -> str:
+    """정제된 한 건을 clean 저장소에 넣는다.
+
+    policy="skip"   이미 있으면 그대로 둔다 (기본)
+    policy="upsert" 이미 있으면 새 내용으로 덮어쓴다
+
+    왜 두 가지가 필요한가
+      skip   — 같은 기사를 다시 처리하지 않아 빠르다. 평소 운영용.
+      upsert — 정제 규칙(키워드 등)을 고친 뒤 전체를 다시 반영할 때 쓴다.
+    """
+    values = [item.get(f) for f in CLEAN_FIELDS] + [now_iso()]
+    placeholders = ", ".join("?" * (len(CLEAN_FIELDS) + 1))
+    columns = ", ".join(CLEAN_FIELDS + ["cleaned_at"])
+
+    if policy == "upsert":
+        updates = ", ".join(f"{f}=excluded.{f}" for f in CLEAN_FIELDS if f != "url")
+        sql = (f"INSERT INTO clean_news ({columns}) VALUES ({placeholders}) "
+               f"ON CONFLICT(url) DO UPDATE SET {updates}, cleaned_at=excluded.cleaned_at")
+        exists = conn.execute(
+            "SELECT 1 FROM clean_news WHERE url = ?", (item["url"],)
+        ).fetchone()
+        conn.execute(sql, values)
+        return "updated" if exists else "saved"
+
+    sql = f"INSERT OR IGNORE INTO clean_news ({columns}) VALUES ({placeholders})"
+    cur = conn.execute(sql, values)
+    return "saved" if cur.rowcount > 0 else "skipped"
+
+
+def count_clean(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM clean_news").fetchone()[0]
+
+
+def count_clean_by_category(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT category, COUNT(*) AS n FROM clean_news "
+        "GROUP BY category ORDER BY n DESC"
+    ).fetchall()

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import cleaner
 import collector
 import config
 import storage
@@ -174,6 +175,49 @@ def cmd_fetch(args, cfg: dict, log) -> int:
     return 0 if failed == 0 else 3
 
 
+def cmd_clean(args, cfg: dict, log) -> int:
+    """raw 를 정제해 clean 저장소에 넣는다. (요건 3)"""
+    conn = storage.connect(cfg)
+    storage.init_db(conn)
+    storage.migrate(conn)
+    storage.init_clean(conn)
+
+    policy = args.policy or cfg.get("duplicate_policy", "skip")
+    rows = storage.select_raw(conn, args.limit)
+    if not rows:
+        log.warning("raw 저장소가 비어 있습니다. 먼저 fetch 를 실행하세요.")
+        conn.close()
+        return 1
+
+    log.info("정제 시작: 대상 %d건, 중복 정책 = %s", len(rows), policy)
+
+    stats = {"saved": 0, "updated": 0, "skipped": 0}
+    dropped: dict[str, int] = {}
+
+    for row in rows:
+        item, reason = cleaner.clean_row(row, cfg.get("categories", []))
+        if item is None:
+            dropped[reason] = dropped.get(reason, 0) + 1
+            log.debug("제외 (ID=%d, %s): %s", row["id"], reason, (row["title"] or "")[:30])
+            continue
+        result = storage.upsert_clean(conn, item, policy)
+        stats[result] += 1
+    conn.commit()
+
+    total_dropped = sum(dropped.values())
+    log.info("정제 완료: %d건 저장, %d건 갱신, %d건 건너뜀, %d건 제외",
+             stats["saved"], stats["updated"], stats["skipped"], total_dropped)
+    for reason, n in sorted(dropped.items(), key=lambda kv: -kv[1]):
+        log.info("  제외 사유 - %s: %d건", reason, n)
+
+    log.info("clean 저장소 총 %d건", storage.count_clean(conn))
+    for r in storage.count_clean_by_category(conn):
+        log.info("  - %s: %d건", r["category"], r["n"])
+
+    conn.close()
+    return 0
+
+
 def not_ready(name: str, stage: str) -> int:
     """아직 만들지 않은 기능을 안내한다."""
     print(f"[INFO] '{name}' 명령은 아직 준비 중입니다. ({stage} 에서 추가됩니다)")
@@ -210,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "fetch":
         return cmd_fetch(args, cfg, log)
+    if args.command == "clean":
+        return cmd_clean(args, cfg, log)
 
     return not_ready(args.command, stage)
 
